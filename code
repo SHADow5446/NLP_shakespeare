@@ -1,0 +1,105 @@
+# dataset
+import tensorflow as tf
+
+dataset_url = "https://homl.info/shakespeare"
+filepath = tf.keras.utils.get_file('shakespeare.txt',dataset_url)
+with open(filepath) as f:
+  shakespeare_text = f.read()
+#______________________________________________________________________
+print(shakespeare_text[:80])
+#______________________________________________________________________
+txt_vec_layer = tf.keras.layers.TextVectorization(split='character',
+                                                  standardize= 'lower')# split at character level encoding and standardize to lowercase text
+txt_vec_layer.adapt([shakespeare_text])
+encoded = txt_vec_layer([shakespeare_text])[0]
+#_______________________________________________________________________
+encoded -= 2 #drop token 0 and token 1 which is used for (padding) and (unknown char) respectively
+n_tokens = txt_vec_layer.vocabulary_size() - 2 # no. of distinct char
+print('distinct char:',n_tokens)
+dataset_size = len(encoded)
+dataset_size
+#________________________________________________________________________
+# utility function
+def to_dataset(sequence, lenght, shuffle= False, seed= None, batch_size= 32):
+  ds = tf.data.Dataset.from_tensor_slices(sequence)
+  ds = ds.window(lenght + 1, shift=1, drop_remainder=True)
+  ds = ds.flat_map(lambda window_ds : window_ds.batch(lenght+1))
+  if shuffle:
+    ds = ds.shuffle(buffer_size = 100_000, seed=seed)
+  ds = ds.batch(batch_size)
+  return ds.map(lambda window : (window[:, :-1], window[:,1:])).prefetch(1)
+#___________________________________________________________________________
+#training set, validation set, test set
+lenght = 100
+tf.random.set_seed(42)
+train_set = to_dataset(encoded[:1_000_000], lenght=lenght, shuffle=True,seed=42)#90%
+valid_set = to_dataset(encoded[1_000_000:1_060_000],lenght=lenght)#5%
+test_set = to_dataset(encoded[1_060_000:], lenght=lenght)#5%
+#___________________________________________________________________________
+#this model take 1 or 2 hour to run if you using colab with gpu take 8mins to complete one epochs
+model = tf.keras.Sequential([
+    tf.keras.layers.Embedding(input_dim= n_tokens, output_dim = 16),
+    tf.keras.layers.GRU(128, return_sequences= True),
+    tf.keras.layers.Dense(n_tokens, activation= 'softmax')
+])
+model.compile(loss='sparse_categorical_crossentropy',
+              optimizer='nadam',
+              metrics=['accuracy'])
+callback = tf.keras.callbacks.ModelCheckpoint('my_model', monitor='val_accuracy',save_best_only=True)
+history = model.fit(train_set, validation_data=valid_set,epochs=10,
+                    callbacks=[callback])
+#______________________________________________________________________________
+model.save('shakespeare.h5')# save for future use
+from keras import models
+model = models.load_model('/content/shakespeare.h5')# load model use if necessary
+#______________________________________________________________________________
+#previous model does not handle text preprocessing
+# make new model with fisrt layer with textvectorization, second layer Lambda to subtract 2 from char IDs
+# this model use previous model as well 
+model_2 = tf.keras.Sequential([
+    txt_vec_layer,
+    tf.keras.layers.Lambda(lambda X: X - 2), #no (pad) or (unknown) tokens
+    model
+])
+#______________________________________________________________________________
+#predict
+Y_prob  = model_2.predict(["TO be or not to b"])[0,-1]
+Y_pred = tf.argmax(Y_prob)
+txt_vec_layer.get_vocabulary()[Y_pred + 2]
+#_______________________________________________________________________________
+# generating text
+log_prob = tf.math.log([[0.5,0.4,0.1]])#[50%, 40%, 10%]
+tf.random.set_seed(42)
+tf.random.categorical(log_prob, num_samples = 8)# use for probability estimation
+
+# for more control we divide log by tempreature
+#a temp close to 0 favour high prob
+#lower temp used for presice text
+#high temp used for more diverse and creative txt
+
+def next_char(text, tempreature=1):
+  y_prob = model_2.predict([text])[0, -1:]
+  rescaled_log = tf.math.log(y_prob) / tempreature
+  char_id = tf.random.categorical(rescaled_log, num_samples=1)[0, 0]
+  return txt_vec_layer.get_vocabulary()[char_id + 2]
+
+def extend_txt (text, n_char = 87, tempreature=1): #n_char = len of predict text
+  for _ in range(n_char):
+    text += next_char(text, tempreature)
+  return text
+
+#let's generate
+tf.random.set_seed(42)
+print(extend_txt("To be or not to be", tempreature=0.01))
+#To be or not to be so stand in the duke.
+ provost:
+ i am a man and so i am not the strange and a provost,#
+
+print(extend_txt("To be or not to be", tempreature=1))
+#To be or not to bed aside
+as alpeation: here's again hath been still
+burn into emplons, my enemy, desire#
+
+print(extend_txt("To be or not to be", tempreature=100))
+#To be or not to be:?sdovyqtov!l&b!je?$;hiqtetas'xosq;!jorar:p?i.ies;astsz-;jbrpi!de$s?cp;??
+;sbkjd3c$;mq#
